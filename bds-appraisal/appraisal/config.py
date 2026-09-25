@@ -54,12 +54,10 @@ CRITICAL_CAP = "Revise and resubmit"
 OPL_AS_OF = "July 2026"
 NATIONAL_OPL = 17_679
 DISTRICT_OPL = {
-    "Batticaloa": 17_775,
-    "Trincomalee": 17_226,
-       "Mullaitivu": 18_963,
-       "Anuradhapura": 17_253,
-       "Kegalle": 18_484,
+    "Colombo": 19_067,
+    "Gampaha": 18_969,
     "Nuwara Eliya": 18_592,
+    "Monaragala": 16_904,
 }
 
 SRI_LANKA_DISTRICTS = [
@@ -75,7 +73,7 @@ SRI_LANKA_DISTRICTS = [
 class Settings:
     """Thresholds a reviewer can tune from the sidebar."""
     poverty_line: float | None = None          # None = use district / national
-    min_beneficiary_share: float = 0.00        # own contribution / total investment
+    min_beneficiary_share: float = 0.25        # own contribution / total investment
     max_grant: float | None = None             # per-beneficiary grant ceiling
     sales_growth_ok: float = 0.25              # growth that needs no justification
     sales_growth_caution: float = 0.50
