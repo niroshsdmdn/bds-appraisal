@@ -6,12 +6,13 @@ explains what was found and exactly how the writer can recover the marks.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 
 from .config import (CRITERIA, CRITICAL_CAP, DISTRICT_OPL, NATIONAL_OPL, OPL_AS_OF,
                      Settings, band_for, band_rank)
-from .parse import Proposal
+from .parse import EXPENSE_KEYS, Proposal
+from .sectors import BUSINESS_TRAINING, Sector, choose as choose_sector
 
 # --------------------------------------------------------------------------
 # data classes
@@ -177,24 +178,6 @@ def decode_nic(nic: str | None, ref: date) -> dict | None:
     return {"valid": True, "born": born, "age": age, "gender": "female" if female else "male"}
 
 
-KEY_NOUNS = {
-    "spray": ["spray", "sprayer", "spary", "sprey"],
-    "hose": ["hose", "tube", "pipe"],
-    "motor": ["motor", "pump", "water pump"],
-    "fence": ["fence", "fencing"],
-    "tank": ["tank", "barrel"],
-    "sprinkler": ["sprinkler", "drip", "irrigation"],
-    "tiller": ["tiller", "tractor"],
-    "polytunnel": ["polytunnel", "poly tunnel", "greenhouse", "net house"],
-    "tools": ["mammoty", "fork", "knife", "tools", "hoe"],
-}
-
-
-def nouns_in(text: str) -> set[str]:
-    t = (text or "").lower()
-    return {k for k, syns in KEY_NOUNS.items() if any(s in t for s in syns)}
-
-
 def word_count(text: str, pattern: str) -> int:
     return len(re.findall(pattern, text or "", re.I))
 
@@ -202,9 +185,21 @@ def word_count(text: str, pattern: str) -> int:
 # --------------------------------------------------------------------------
 # the appraisal
 # --------------------------------------------------------------------------
-def appraise(p: Proposal, settings: Settings | None = None, today: date | None = None) -> Appraisal:
+def appraise(p: Proposal, settings: Settings | None = None, today: date | None = None,
+             sector: str | None = None) -> Appraisal:
     s = settings or Settings()
     ref = p.prepared_date or today or date.today()
+    sec: Sector
+    sec, sector_scores = choose_sector(
+        p.livelihood or "", p.product or "", p.overview or "", p.narrative or "",
+        " ".join(i.name for i in p.equipment), " ".join(p.goals),
+        override=sector or s.extra.get("sector"))
+    # sector thresholds unless the reviewer set their own in the sidebar
+    if s.extra.get("sector_thresholds", True):
+        s = replace(s, margin_ok=sec.margin_ok, margin_limit=sec.margin_limit,
+                    sales_growth_ok=sec.growth_ok, sales_growth_caution=sec.growth_caution,
+                    sales_growth_limit=sec.growth_limit)
+    nouns_in = sec.nouns_in
     checks: list[Check] = []
     add = checks.append
     text_all = " ".join([p.narrative, p.overview, " ".join(p.goals),
@@ -414,56 +409,53 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
     # ======================= C3 livelihood viability and market =============
     ov = p.overview or ""
     c = Check("C3.1", "C3", "Livelihood overview is specific to this family", 5)
-    crops = re.findall(r"\b(carrot|leeks?|cabbage|potato|beans?|beetroot|radish|knol ?khol|lettuce|"
-                       r"cauliflower|broccoli|tomato|capsicum|strawberr\w*|pepper|pumpkin|onion|"
-                       r"garlic|chilli|brinjal|okra|cucumber|paddy|tea|mushroom|poultry|goat|cow|milk)\b",
-                       ov + " " + p.narrative, re.I)
-    land = re.search(r"\b(acres?|perch(es)?|hectares?|\bha\b|sq\.?\s*ft)\b", ov + p.narrative, re.I)
-    exp_yrs = re.search(r"\d+\s*years?\s*(of\s*)?(experience|in (this|cultivation|farming))", text_all, re.I)
-    prod = re.search(r"\b(kg|yield|harvest|season|maha|yala|per month|per week)\b", ov, re.I)
-    parts = {"crops named": bool(crops), "land extent": bool(land),
-             "years of experience": bool(exp_yrs), "production or season detail": bool(prod)}
-    c.earned = 1.5 * parts["crops named"] + 1.5 * parts["land extent"] + parts["years of experience"] + parts["production or season detail"]
-    generic = len(ov) > 600 and not any(parts.values())
+    body = " ".join([ov, p.narrative])
+    parts = {label: bool(re.search(pat, body, re.I)) for label, pat, _ in sec.specificity}
+    c.earned = sum(w for label, _, w in sec.specificity if parts[label])
+    figures = len(re.findall(r"\d", body))
+    boilerplate = len(body) > 350 and figures < 3
+    if boilerplate:                      # general essay rather than this business
+        c.earned = round(c.earned * 0.4, 2)
+    generic = boilerplate or (len(ov) > 600 and not any(parts.values()))
     c.status = "pass" if c.earned >= 5 else "partial" if c.earned else "fail"
     c.severity = "major" if c.earned < 2.5 else "minor"
     miss = [k for k, v in parts.items() if not v]
-    c.finding = ("The overview is general text about cultivation and says little about this family's farm. "
-                 if generic else "") + (("Missing: " + ", ".join(miss) + ".") if miss else "Overview is specific.")
-    if miss:
-        c.suggestion = ("Replace generic text with facts about this farm: crops grown, land extent "
-                        "(perches/acres), years farming, seasons and expected yields.")
+    c.finding = (f"The overview is general text about {sec.name.lower()} with almost no figures for this "
+                 "family's business. " if generic else "") + (
+        ("Missing: " + ", ".join(miss) + ".") if miss else "Overview is specific.")
+    if miss or boilerplate:
+        c.suggestion = ("Replace general text with facts and figures for this business"
+                        + (": " + ", ".join(miss) if miss else "")
+                        + (". An overview with no numbers cannot be appraised." if boilerplate else "."))
     add(c)
 
     c = Check("C3.2", "C3", "Market linkage is specific", 4)
-    mk = re.findall(r"\b(buyer|collector|wholesale|economic cent(er|re)|dambulla|keppetipola|welimada|"
-                    r"supermarket|cargills|keells|contract|middleman|pola|fair|per kg|/kg|rs\.? ?\d+ ?per)\b",
-                    text_all, re.I)
+    mk = re.findall(sec.market_terms, text_all, re.I)
     c.earned = 1 if p.market else 0
     c.earned += 3 if len(mk) >= 2 else 1.5 if mk else 0
     c.status = "pass" if c.earned >= 4 else "partial" if c.earned else "fail"
     c.severity = "major" if c.earned <= 1 else "minor"
     c.finding = (f"Market is given as '{p.market}'" if p.market else "No market stated") + (
-        " with no named buyer, sales channel or price." if not mk else f"; market evidence: {', '.join(sorted({m[0].lower() for m in mk}))}.")
+        " with no named buyer, sales channel or price." if not mk else f"; market evidence: {', '.join(sorted({(m[0] if isinstance(m, tuple) else m).lower() for m in mk if m}))}.")
     if c.earned < 4:
-        c.suggestion = ("Name where and to whom produce is sold (e.g. economic centre, collector, "
-                        "supermarket), how often, and the current farm-gate price per kg.")
+        c.suggestion = (f"Name where and to whom the {sec.unit_hint}s are sold, how often, and the "
+                        f"current price per {sec.unit_hint}. Name real buyers, not just the town.")
     add(c)
 
     sales_cur, sales_fy = p.annual_value("sales", 0), p.annual_value("sales", 1)
     c = Check("C3.3", "C3", "Sales projection is built up from volume and price", 3)
-    basis = re.search(r"\b(kg|yield|price per|per kg|harvests?)\b", p.full_text or text_all, re.I)
+    basis = re.search(sec.sales_basis, p.full_text or text_all, re.I)
     c.earned = 2 if basis else 0
     if p.annual_sale is not None and sales_fy is not None:
         c.earned += 1 if close(p.annual_sale, sales_fy) else 0
     c.status = "pass" if c.earned >= 3 else "partial" if c.earned else "fail"
-    c.finding = ("Annual sales are stated as a lump sum with no quantity, price or season breakdown."
+    c.finding = ("Annual sales are stated as a lump sum with no quantity, price or period breakdown."
                  if not basis else "Sales are supported by volume/price detail.")
     if p.annual_sale is not None and sales_fy is not None and not close(p.annual_sale, sales_fy):
         c.finding += f" Livelihood Detail sales ({rs(p.annual_sale)}) differ from section 6 ({rs(sales_fy)})."
     if c.earned < 3:
-        c.suggestion = ("Add a small table: crop, extent, harvests per year, yield per harvest (kg), "
-                        "price per kg, and resulting sales.")
+        c.suggestion = (f"Show how the sales figure was built: number of {sec.unit_hint}s per day, week "
+                        f"or month, the price per {sec.unit_hint}, and the resulting annual sales.")
     add(c)
 
     c = Check("C3.4", "C3", "Goals are measurable and match the projections", 3)
@@ -472,8 +464,23 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
         m = re.search(r"(\d+(?:\.\d+)?)\s*%", g)
         if m and re.search(r"income", g, re.I):
             pct_goal = float(m.group(1)) / 100
-    culti_cur = next((i.amount for i in cur.incomes if i.amount and re.search(r"cultiv|farm|livelihood", i.source, re.I)), None)
-    culti_exp = next((i.amount for i in exp.incomes if i.amount and re.search(r"cultiv|farm|livelihood", i.source, re.I)), None)
+    def business_lines() -> tuple[float | None, float | None, str]:
+        """The income line that is this livelihood, matched across both tables."""
+        def norm(t):
+            return re.sub(r"[^a-z]", "", (t or "").lower())
+
+        cur_map = {norm(i.source): i.amount for i in cur.incomes if i.amount is not None}
+        exp_map = {norm(i.source): i.amount for i in exp.incomes if i.amount is not None}
+        shared = [k for k in exp_map if k in cur_map]
+        if not shared:
+            return None, None, ""
+        hint = norm((p.livelihood or "") + (p.product or ""))
+        named = [k for k in shared if k and hint and (k in hint or hint.startswith(k[:6]))]
+        key = named[0] if named else max(shared, key=lambda k: abs(exp_map[k] - cur_map[k]))
+        label = next((i.source for i in exp.incomes if norm(i.source) == key), key)
+        return cur_map[key], exp_map[key], label
+
+    culti_cur, culti_exp, biz_label = business_lines()
     proj_livelihood = (culti_exp / culti_cur - 1) if culti_cur and culti_exp else None
     proj_house = (exp.total_income / cur.total_income - 1) if cur.total_income and exp.total_income else None
     if not p.goals:
@@ -488,13 +495,35 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
         proj = proj_livelihood if proj_livelihood is not None else proj_house
         if proj is not None and (proj > pct_goal * 2 + 0.1 or proj < pct_goal / 2):
             c.status, c.severity = "fail", "major"
+            shown = []
+            if proj_livelihood is not None:
+                shown.append(f"{biz_label or 'livelihood'} income rising {proj_livelihood:.0%}")
+            if proj_house is not None:
+                shown.append(f"household income rising {proj_house:.0%}")
             c.finding = (f"The goal is a {pct_goal:.0%} income increase, but the projections show "
-                         + (f"livelihood income rising {proj_livelihood:.0%}" if proj_livelihood is not None else "")
-                         + (f" and household income rising {proj_house:.0%}" if proj_house is not None else "") + ".")
+                         + " and ".join(shown) + ".")
             c.suggestion = ("Align the goal and the projections: either justify the larger increase "
                             "or revise the projections to the stated target.")
         else:
             c.earned, c.finding = 3, "Goals are measurable and consistent with the projections."
+    add(c)
+
+    c = Check("C3.5", "C3", "Licences, permits and insurance", 2)
+    if not sec.compliance:
+        c.status = "na"
+        c.finding = f"No licence or permit is normally required for {sec.name.lower()}."
+    else:
+        have = [label for label, pat in sec.compliance if re.search(pat, p.full_text or text_all, re.I)]
+        missing = [label for label, _ in sec.compliance if label not in have]
+        c.earned = 2 * len(have) / len(sec.compliance)
+        c.status = "pass" if not missing else "partial" if have else "fail"
+        c.severity = "major" if not have else "minor"
+        c.finding = ("Covered: " + ", ".join(have) + "." if have else
+                     f"The proposal does not mention the approvals a {sec.name.lower()} business needs.")
+        if missing:
+            c.finding += (" Not mentioned: " + ", ".join(missing) + ".")
+            c.suggestion = ("State whether the family holds, or how they will obtain, " +
+                            ", ".join(missing) + ".")
     add(c)
 
     # ======================= C4 financial soundness =========================
@@ -509,8 +538,7 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
             arith.append((f"{label} per-capita income", b.per_capita, b.total_income / n))
     if exp.per_capita_change is not None and exp.per_capita and cur.per_capita:
         arith.append(("change in per-capita income", exp.per_capita_change, exp.per_capita - cur.per_capita))
-    expense_keys = ["seeds", "raw_material", "labour", "land_prep", "fertilizer", "chemicals",
-                    "machine_rent", "depreciation", "marketing", "administration", "overhead"]
+    expense_keys = EXPENSE_KEYS
     for i, lab in ((0, "current"), (1, "year-1")):
         items = [p.annual_value(k, i) for k in expense_keys if p.annual_value(k, i) is not None]
         te, ti, pr = (p.annual_value("total_expense", i), p.annual_value("total_income", i),
@@ -585,8 +613,7 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
     add(c)
 
     growth = (sales_fy / sales_cur - 1) if sales_cur and sales_fy is not None else None
-    justified = bool(re.search(r"\b(extend|expan|additional land|new land|more land|acre|perch|yield|"
-                               r"irrigat|second season|two seasons|reduce (loss|damage))", text_all, re.I))
+    justified = bool(re.search(sec.growth_drivers, text_all, re.I))
     c = Check("C4.3", "C4", "Sales growth is realistic", 4)
     if growth is None:
         c.status = "na" if sales_cur == 0 else "partial"
@@ -603,7 +630,7 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
             c.earned = 1.5
         else:
             c.earned = 0
-        if justified and c.earned < 4:
+        if justified and 0 < c.earned < 4 and growth <= s.sales_growth_limit:
             c.earned = min(4, c.earned + 1)
         c.status = "pass" if c.earned == 4 else "partial" if c.earned else "fail"
         c.finding = f"Sales rise {growth:.0%} in year 1 ({rs(sales_cur)} to {rs(sales_fy)})" + (
@@ -611,8 +638,9 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
             else "; drivers are mentioned but not quantified.")
         if c.earned < 4:
             c.severity = "major" if growth > s.sales_growth_limit else "minor"
-            c.suggestion = ("Explain and quantify the growth (extra extent, extra season, reduced crop "
-                            f"loss, better price) or reduce year-1 sales to a growth of about {s.sales_growth_caution:.0%} or less.")
+            c.suggestion = (f"Explain and quantify what drives the increase for a {sec.name.lower()} "
+                            f"business, or reduce year-1 sales to a growth of about "
+                            f"{s.sales_growth_caution:.0%} or less.")
     add(c)
 
     te0, te1 = p.annual_value("total_expense", 0), p.annual_value("total_expense", 1)
@@ -621,18 +649,32 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
         c.status, c.earned, c.finding = "partial", 1.5, "Cost trend could not be tested."
         c.suggestion = "Complete current and year-1 expenditure in section 6."
     else:
-        cost_growth = te1 / te0 - 1
+        ended = 0.0
+        ended_labels = []
+        stops_paying = re.search(r"stops? (paying|renting|hiring)|no longer (rents?|hires?|pays?)|own (vehicle|machine|"
+                                 r"equipment|shop)|instead of (renting|hiring)|save the rent|end the (rent|hire)",
+                                 text_all, re.I)
+        for key in expense_keys:
+            a, b = p.annual_value(key, 0), p.annual_value(key, 1)
+            if a and b is not None and b == 0 and stops_paying:
+                ended += a
+                ended_labels.append(key.replace("_", " "))
+        base0 = te0 - ended
+        cost_growth = (te1 / base0 - 1) if base0 > 0 else 0.0
         notes = []
+        if ended:
+            notes.append(f"{', '.join(ended_labels)} of {rs(ended)} ends with the new asset, as explained")
         if growth > 0.10 and cost_growth < 0:
             c.earned = 0
-            notes.append(f"Sales rise {growth:.0%} while total costs fall {abs(cost_growth):.0%}.")
+            notes.append(f"Sales rise {growth:.0%} while the remaining costs fall {abs(cost_growth):.0%}.")
         elif growth > 0.10 and cost_growth < growth / 2:
             c.earned = 1.5
             notes.append(f"Costs rise only {cost_growth:.0%} against {growth:.0%} sales growth.")
         else:
             c.earned = 3
-        flat_inputs = [label for key, label in (("seeds", "seeds"), ("fertilizer", "fertilizer"),
-                                                 ("chemicals", "chemicals"))
+        if ended and c.earned == 3 and len(notes) == 1:
+            notes = []
+        flat_inputs = [key.replace("_", " ") for key in sec.input_keys
                        if growth > 0.25 and p.annual_value(key, 0)
                        and p.annual_value(key, 1) is not None
                        and p.annual_value(key, 1) <= p.annual_value(key, 0)]
@@ -640,17 +682,22 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
             notes.append(", ".join(flat_inputs) + " costs do not increase with production")
         if p.annual_value("marketing", 1) in (0, None) and growth > 0.25:
             notes.append("no marketing or transport cost is budgeted")
-        lp0, lp1 = p.annual_value("land_prep", 0), p.annual_value("land_prep", 1)
-        if lp0 and lp1 is not None and lp1 < lp0 * 0.75:
-            notes.append(f"land preparation drops from {rs(lp0)} to {rs(lp1)} without explanation")
+        for key, label in (("land_prep", "land preparation"), ("labour", "labour"),
+                           ("rent", "rent"), ("fuel", "fuel")):
+            if key.replace("_", " ") in ended_labels:
+                continue
+            a, b = p.annual_value(key, 0), p.annual_value(key, 1)
+            if a and b is not None and b < a * 0.75:
+                notes.append(f"{label} drops from {rs(a)} to {rs(b)} without explanation")
         c.status = "pass" if c.earned == 3 and len(notes) == 0 else "partial" if c.earned else "fail"
         if c.earned == 3 and notes:
             c.earned = 2
         c.severity = "major" if c.earned == 0 else "minor"
         c.finding = " ".join([notes[0]] + ([("Also: " + "; ".join(notes[1:]) + ".")] if len(notes) > 1 else [])) if notes else "Costs scale sensibly with production."
         if c.status != "pass":
-            c.suggestion = ("Scale input, labour and transport/marketing costs to the higher production, "
-                            "and explain any cost that falls.")
+            c.suggestion = (f"Scale the running costs of a {sec.name.lower()} business "
+                            f"({', '.join(k.replace('_', ' ') for k in sec.input_keys[:3])}, labour, "
+                            "transport) to the higher production, and explain any cost that falls.")
     add(c)
 
     c = Check("C4.5", "C4", "Profit margin is plausible", 2)
@@ -662,8 +709,8 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
         c.finding = f"Year-1 margin is {m1:.0%}" + (f" (current {m0:.0%})." if m0 is not None else ".")
         if c.earned < 2:
             c.severity = "major" if c.earned == 0 else "minor"
-            c.suggestion = (f"A margin above {s.margin_ok:.0%} needs evidence; show the cost build-up "
-                            "or use a more conservative profit.")
+            c.suggestion = (f"For {sec.name.lower()}, a margin above {s.margin_ok:.0%} needs evidence; "
+                            "show the cost build-up or use a more conservative profit.")
     else:
         c.status, c.earned, c.finding = "fail", 0, "Year-1 sales or profit missing."
         c.suggestion = "Complete section 6."
@@ -715,12 +762,9 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
     c = Check("C5.2", "C5", "Each item is justified", 3)
     story = " ".join([p.narrative, p.overview, " ".join(p.goals), " ".join(m for _, m in p.risks), " ".join(r for r, _ in p.risks)])
     story_n = nouns_in(story)
-    if re.search(r"wild|animal|elephant|boar|pig|monkey|porcupine|cattle|theft", story, re.I):
-        story_n.add("fence")
-    if re.search(r"water|irrigat|dry|drought", story, re.I):
-        story_n |= {"hose", "motor", "sprinkler"}
-    if re.search(r"pest|disease", story, re.I):
-        story_n.add("spray")
+    for noun, signal in sec.all_need_signals().items():
+        if re.search(signal, story, re.I):
+            story_n.add(noun)
     if p.equipment:
         justified_items = [n for n, ns in eq_nouns.items() if ns & story_n]
         c.earned = 3 * len(justified_items) / len(p.equipment)
@@ -730,8 +774,9 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
                      "No explanation of how these items raise income or reduce loss: " + ", ".join(unjust) + ".")
         if unjust:
             c.severity = "major" if len(unjust) == len(p.equipment) else "minor"
-            c.suggestion = ("For each item, add one sentence on the problem it solves (e.g. animal damage, "
-                            "manual watering time, pest loss) and its effect on yield or cost.")
+            c.suggestion = ("For each item, add one sentence on the problem it solves and what it changes "
+                            f"in the business: more {sec.unit_hint}s, better quality, less waste, or a cost "
+                            "the family stops paying (hire, rent, wastage).")
     else:
         c.status, c.finding = "na", "No items to justify."
     add(c)
@@ -837,25 +882,21 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
         c.suggestion = "List at least four material risks."
     add(c)
 
-    cats = {
-        "market price": r"price|market|demand|buyer",
-        "weather": r"flood|drought|rain|frost|landslide|weather|climat",
-        "pest or disease": r"pest|disease|insect|fung",
-        "wildlife or theft": r"wild|animal|boar|monkey|porcupine|theft|stray",
-        "equipment failure": r"equipment|breakdown|repair|maintenance|motor|machine",
-        "soil or water": r"soil|fertility|water|irrigation",
-        "health or labour": r"health|illness|labou?r",
-    }
+    cats = sec.all_risks()
     rtxt = " ".join(r for r, _ in p.risks)
     covered = [k for k, pat in cats.items() if re.search(pat, rtxt, re.I)]
-    expected_missing = [k for k in ("market price", "weather", "wildlife or theft", "equipment failure") if k not in covered]
+    expected_missing = [k for k in sec.must_cover if k not in covered]
     c = Check("C7.2", "C7", "Risks fit this livelihood", 3)
-    c.earned = 3 * min(len(covered), 4) / 4
-    c.status = "pass" if len(covered) >= 4 else "partial" if covered else "fail"
-    c.finding = "Covers: " + (", ".join(covered) or "none") + "." + (
-        f" Not covered: {', '.join(expected_missing)}." if expected_missing else "")
-    if "fence" in {x for ns in eq_nouns.values() for x in ns} and "wildlife or theft" not in covered:
-        c.finding += " An electric fence is requested but animal damage is not listed as a risk."
+    target = max(len(sec.must_cover), 4)
+    c.earned = 3 * min(len(covered), target) / target
+    c.status = "pass" if len(covered) >= target else "partial" if covered else "fail"
+    c.finding = (f"For {sec.name.lower()}, covers: " + (", ".join(covered) or "none") + "." + (
+        f" Not covered: {', '.join(expected_missing)}." if expected_missing else ""))
+    requested_nouns = {x for ns in eq_nouns.values() for x in ns}
+    if "fence" in requested_nouns and "wildlife" not in covered:
+        c.finding += " A fence is requested but animal damage is not listed as a risk."
+    if "fridge" in requested_nouns and "stock spoilage or expiry" not in covered and "spoilage or quality" not in covered:
+        c.finding += " Cold storage is requested but spoilage is not listed as a risk."
     if expected_missing:
         c.suggestion = "Add " + ", ".join(expected_missing) + " with a practical mitigation for each."
     add(c)
@@ -878,14 +919,14 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
     # ======================= C8 capacity building ===========================
     ttxt = " ".join(a + " " + b for a, b in p.trainings)
     c = Check("C8.1", "C8", "Technical training planned", 1.5)
-    if re.search(r"technical|cultivation|production|farming|husbandry|gap|agronom", ttxt, re.I):
+    if re.search(sec.training_terms, ttxt, re.I):
         c.earned, c.finding = 1.5, "Technical training is planned."
     else:
         c.status, c.finding = "fail", "No technical training listed."
-        c.suggestion = "Add technical training linked to the livelihood."
+        c.suggestion = f"Add technical training for {sec.name.lower()} (skills, quality, productivity)."
     add(c)
     c = Check("C8.2", "C8", "Business and financial skills planned", 1.5)
-    if re.search(r"book ?keeping|record|financial|business|marketing|saving|costing|entrepreneur", ttxt, re.I):
+    if re.search(BUSINESS_TRAINING, ttxt, re.I):
         c.earned, c.finding = 1.5, "Business or financial training is planned."
     else:
         c.status = "fail"
@@ -956,7 +997,9 @@ def appraise(p: Proposal, settings: Settings | None = None, today: date | None =
         if x.status == "pass":
             x.severity = "info"
     critical = [x for x in checks if x.severity == "critical" and x.status in {"fail", "partial"}]
-    ctx = {"poverty_line": opl, "poverty_line_source": opl_src, "reference_date": str(ref),
+    ctx = {"sector": sec.id, "sector_name": sec.name,
+           "sector_detected": bool(not (sector or s.extra.get("sector"))),
+           "sector_scores": sector_scores, "poverty_line": opl, "poverty_line_source": opl_src, "reference_date": str(ref),
            "nic": {k: str(v) for k, v in (nic or {}).items()}, "sales_growth": growth,
            "arithmetic_checked": len(arith), "arithmetic_errors": len(errors)}
     return Appraisal(checks, criteria, critical, ctx)

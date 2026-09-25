@@ -166,6 +166,21 @@ ANNUAL_KEYS = [
     ("fertilizer", r"^fertili[sz]er"),
     ("chemicals", r"^chemical"),
     ("machine_rent", r"^machine rent"),
+    ("purchases", r"\b(purchase|cost of (goods|sales)|stock purchase|trading|buying)"),
+    ("feed", r"\b(feed|fodder|ration|concentrate)\b"),
+    ("veterinary", r"\b(veterinar|medicine|vaccin|drugs)"),
+    ("ingredients", r"\b(ingredient|flour|provision|grocer)"),
+    ("materials", r"\b(material|fabric|cloth|thread|timber|cement|sand|steel|consumable)"),
+    ("packaging", r"\b(packag|packing|label|bottle|wrapp|carton)"),
+    ("fuel", r"\b(fuel|petrol|diesel|gas\b|firewood|kerosene)"),
+    ("rent", r"\b(rent|lease)\b"),
+    ("transport", r"\b(transport|delivery|freight|travel|fare)"),
+    ("utilities", r"\b(electricity|water (bill|charge)|utilit|telephone|internet)"),
+    ("maintenance", r"\b(maintenance|repairs?|servicing|service charge)"),
+    ("spares", r"\b(spare)"),
+    ("salaries", r"\b(salar|wages)"),
+    ("insurance", r"\binsurance\b"),
+    ("licence", r"\b(licen[cs]e|permit)\b"),
     ("depreciation", r"^depr[ie]*ciation"),
     ("marketing", r"^marketing"),
     ("administration", r"^administration"),
@@ -176,6 +191,10 @@ ANNUAL_KEYS = [
     ("per_capita", r"^per\s*capita"),
     ("daily_income", r"^daily income"),
 ]
+
+NON_EXPENSE_KEYS = {"sales", "total_expense", "total_income", "profit", "per_capita",
+                    "daily_income", "labour_group"}
+EXPENSE_KEYS = [k for k, _ in ANNUAL_KEYS if k not in NON_EXPENSE_KEYS]
 
 INVEST_KEYS = [
     ("land", r"^land$"), ("buildings", r"^buildings?$"), ("machinery", r"^machinery"),

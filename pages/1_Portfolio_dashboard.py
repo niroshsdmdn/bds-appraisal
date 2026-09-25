@@ -60,7 +60,7 @@ def load_register() -> list[dict]:
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    for col in ["saved_at", "district", "livelihood", "prepared_by", "system_decision", "reviewer_decision",
+    for col in ["saved_at", "district", "livelihood", "sector", "prepared_by", "system_decision", "reviewer_decision",
                 "approver_decision", "critical_findings", "failed_checks", "file_sha1", "grant_rs"]:
         if col not in df:
             df[col] = ""
@@ -85,6 +85,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["final_decision"] = df.apply(final, axis=1)
     df["district"] = df["district"].astype(str).replace({"": "Unknown", "nan": "Unknown"})
     df["livelihood"] = df["livelihood"].astype(str).replace({"": "Unknown", "nan": "Unknown"})
+    df["sector"] = df["sector"].astype(str).replace({"": "Unknown", "nan": "Unknown"})
     df["preparer"] = (df["prepared_by"].astype(str).str.split(" - ").str[0].str.strip()
                       .replace({"": "Unknown", "nan": "Unknown"}))
     df["critical_findings"] = df["critical_findings"].astype(str).replace("nan", "")
@@ -115,10 +116,13 @@ with st.sidebar:
     pick_d = st.multiselect("District", districts, default=districts)
     livelihoods = sorted(df["livelihood"].unique())
     pick_l = st.multiselect("Livelihood", livelihoods, default=livelihoods)
+    sectors = sorted(df["sector"].unique())
+    pick_s = st.multiselect("Sector", sectors, default=sectors)
     dmin, dmax = df["saved_at"].min(), df["saved_at"].max()
     period = st.date_input("Saved between", (dmin.date(), dmax.date())) if pd.notna(dmin) else None
 view = df[df["district"].isin(pick_d)]
 view = view[view["livelihood"].isin(pick_l)]
+view = view[view["sector"].isin(pick_s)]
 if period and len(period) == 2:
     view = view[(view["saved_at"].dt.date >= period[0]) & (view["saved_at"].dt.date <= period[1])]
 if view.empty:
@@ -204,6 +208,14 @@ with c5:
         tooltip=[alt.Tooltip("month:T", format="%b %Y"), alt.Tooltip("mark:Q", format=".1f"), "n"]),
         width="stretch")
 with c6:
+    if view["sector"].nunique() > 1:
+        st.subheader("Average mark by sector")
+        secs = view.groupby("sector", as_index=False).agg(mark=("total_mark", "mean"), n=("total_mark", "size"))
+        st.altair_chart(alt.Chart(secs).mark_bar(color=NAVY).encode(
+            alt.Y("sector:N", sort="-x", title=None, axis=alt.Axis(labelLimit=260)),
+            alt.X("mark:Q", title="Average mark", scale=alt.Scale(domain=[0, 100])),
+            tooltip=["sector", alt.Tooltip("mark:Q", format=".1f"), "n"]), width="stretch")
+        st.caption("A sector marking low usually means the guidance for that trade needs work.")
     st.subheader("Average mark by preparer")
     prep = view.groupby("preparer", as_index=False).agg(mark=("total_mark", "mean"), n=("total_mark", "size"))
     st.altair_chart(alt.Chart(prep).mark_bar(color=NAVY).encode(
@@ -214,7 +226,7 @@ with c6:
 
 # ---- table
 st.subheader("Appraisals")
-cols = [c for c in ["saved_at", "beneficiary", "district", "livelihood", "grant_rs", "total_mark",
+cols = [c for c in ["saved_at", "beneficiary", "district", "sector", "livelihood", "grant_rs", "total_mark",
                     "system_decision", "final_decision", "critical_findings", "preparer", "folder"] if c in view]
 st.dataframe(view[cols].sort_values("saved_at", ascending=False), hide_index=True, width="stretch",
              column_config={"total_mark": st.column_config.ProgressColumn("Mark", min_value=0, max_value=100,

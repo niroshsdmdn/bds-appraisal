@@ -16,6 +16,7 @@ from appraisal.config import BANDS, CRITERIA, NATIONAL_OPL, OPL_AS_OF, Settings
 from appraisal.extract import extract
 from appraisal.parse import parse
 from appraisal.report import build_excel, build_html
+from appraisal.sectors import options as sector_options
 from appraisal.sharepoint import SharePointClient, SharePointError
 
 st.set_page_config(page_title="BDS proposal appraisal", page_icon="🌱", layout="wide")
@@ -154,6 +155,10 @@ def sidebar_settings(role: str) -> tuple[Settings, bool, float]:
         ai_weight = 0.5
         with st.expander("Thresholds", expanded=False):
             editable = role != "writer"
+            sector_thresholds = st.checkbox(
+                "Use thresholds for the detected sector", value=True, disabled=not editable,
+                help="Growth and profit-margin bands differ by trade: a grocery shop cannot earn a "
+                     "farm's margin, and a service can. Untick to apply the sliders below to every sector.")
             opl = st.number_input("Poverty line override, Rs. per person per month",
                                   min_value=0, value=0, step=100, disabled=not editable,
                                   help=f"0 uses the DCS district line ({OPL_AS_OF}) when the district is "
@@ -173,6 +178,7 @@ def sidebar_settings(role: str) -> tuple[Settings, bool, float]:
             min_beneficiary_share=share / 100, max_grant=float(ceiling) or None,
             sales_growth_limit=growth / 100, sales_growth_caution=min(0.5, growth / 200),
             margin_ok=margin / 100, margin_limit=min(0.95, margin / 100 + 0.15),
+            extra={"sector_thresholds": sector_thresholds},
         )
         st.caption(f"Model: {model}" if use_ai else "Rule engine only")
         sp = sharepoint_client()
@@ -272,7 +278,7 @@ if ss.get("loaded_sha") != ex.sha1:
     ss.approver = {}
     audit("Opened proposal", f"{f['name']} ({f['origin']}, sha1 {ex.sha1})")
 
-appraisal = appraise(prop, settings)
+appraisal = appraise(prop, settings, sector=ss.get(f"sector_{ex.sha1}"))
 ai_key = f"ai_{ex.sha1}"
 api_key, model = anthropic_settings()
 if use_ai and api_key and ai_key not in ss:
@@ -306,6 +312,19 @@ with left:
                 f'{prop.address or prop.district or "location not stated"} · '
                 f'grant {("Rs. " + format(prop.equipment_total.get("bds") or 0, ",.0f"))}</p>',
                 unsafe_allow_html=True)
+    opts = sector_options()
+    ids = [i for i, _ in opts]
+    current = appraisal.context["sector"]
+    auto = appraisal.context["sector_detected"]
+    picked = st.selectbox(
+        "Sector used for the checks", ids, index=ids.index(current),
+        format_func=lambda i: dict(opts)[i] + (" (detected)" if auto and i == current else ""),
+        help="Risks, market evidence, margin bands and item vocabulary come from this sector. "
+             "Change it if the proposal was read as the wrong trade.")
+    if picked != current:
+        ss[f"sector_{ex.sha1}"] = picked
+        audit("Sector changed", f"{current} -> {picked}")
+        st.rerun()
     if appraisal.critical:
         st.markdown("".join(f'<div class="bds-flag"><b>Critical: {c.title}.</b> {c.finding}</div>'
                             for c in appraisal.critical), unsafe_allow_html=True)
@@ -555,6 +574,7 @@ with tabs[4]:
                         "saved_at": datetime.now().isoformat(timespec="seconds"),
                         "beneficiary": prop.name or "", "nic": prop.nic or "",
                         "district": prop.district or "", "livelihood": prop.livelihood or "",
+                        "sector": appraisal.context.get("sector_name", ""),
                         "grant_rs": prop.equipment_total.get("bds") or "",
                         "total_mark": appraisal.total, "system_decision": dec["label"],
                         "critical_findings": ";".join(c.id for c in appraisal.critical),

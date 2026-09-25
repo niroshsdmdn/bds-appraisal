@@ -56,6 +56,7 @@ def build_excel(p: Proposal, a: Appraisal, meta: dict) -> bytes:
         ("File", meta.get("file_name", "")),
         ("Appraised on", datetime.now().strftime("%Y-%m-%d %H:%M")),
         ("Appraised by", f"{meta.get('user', '')} ({meta.get('role', '')})"),
+        ("Sector used for the checks", a.context.get("sector_name", "")),
         ("Total mark (out of 100)", a.total),
         ("System recommendation", dec["label"]),
         ("Guidance", dec["guidance"]),

@@ -13,6 +13,7 @@ and reports are saved to SharePoint.
  Streamlit app  ── Appraisal.py (+ pages/1_Portfolio_dashboard.py)
     ├─ extract.py    PDF / XLSX / CSV  →  tables + text + photos
     ├─ parse.py      template sections →  structured proposal
+    ├─ sectors.py    11 sector profiles →  what to expect from each trade
     ├─ checks.py     38 rule checks    →  9 criteria, 100 marks, decision, fixes
     ├─ ai_review.py  Claude API reads the whole file → second-opinion marks + findings
     ├─ report.py     Excel report, printable HTML, JSON
@@ -43,17 +44,49 @@ Only the latest save of each proposal file is counted. To preview it without Sha
 The register is a plain CSV in SharePoint, so Power BI or Excel can also connect to it
 (Get Data → SharePoint folder) for board-level reporting.
 
+## Sectors
+
+The tool appraises any micro-enterprise, not only farming. It reads the livelihood name,
+product, narrative, overview and equipment list, picks the closest sector profile, and shows
+which one it used above the mark. A reviewer can correct it from that dropdown, and the choice
+is saved with the appraisal.
+
+| Sector | Covers |
+|---|---|
+| Crop cultivation | Vegetables, paddy, tea, fruit, nursery, floriculture, mushrooms |
+| Livestock and animal husbandry | Dairy, poultry, goats, piggery, bee keeping |
+| Fisheries and aquaculture | Fishing, ornamental fish, dried fish, tank culture |
+| Food processing and catering | Bakery, short eats, catering, spices, pickles, dairy products |
+| Retail and trading | Grocery, boutique, stall, mobile vending, communication shop |
+| Tailoring, garments and handicraft | Sewing, uniforms, batik, handloom, coir, craft |
+| Workshop and light manufacturing | Carpentry, welding, fabrication, block making |
+| Personal and professional services | Salon, laundry, tuition, photography, printing |
+| Transport and hiring | Three wheeler, van, lorry, delivery |
+| Repair and technical services | Vehicle, appliance, phone and electrical repair |
+| Other micro-enterprise | Anything the detector cannot place |
+
+Each profile sets what a specific overview must contain, what counts as market evidence and as
+a sales build-up, which reasons justify a jump in sales, which cost rows must rise with
+production, the plausible profit-margin and growth bands, the risks that matter, the item
+vocabulary used to match the request to the equipment list, and the licences the business needs
+(PHI certificate for food, revenue licence and insurance for transport, trade licence for a
+shop). Sector thresholds apply automatically; untick "Use thresholds for the detected sector"
+in the sidebar to apply your own sliders to every proposal instead.
+
+**To add or change a sector**, edit `appraisal/sectors.py` only. Copy an entry, change the
+words, and the whole rubric follows. No other file needs to change.
+
 ## Appraisal rubric (100 marks)
 
 | Criterion | Marks | What is tested |
 |---|---|---|
 | C1 Eligibility and vulnerability | 15 | Per-capita income vs DCS district poverty line; evidence of deficit/debt; family table complete; household size consistent |
 | C2 Completeness and data accuracy | 15 | NIC decoded and matched to age and gender; age consistent across sections; pronouns match the beneficiary; one location throughout; valid phone; key fields filled |
-| C3 Livelihood viability and market | 15 | Overview names crops, land extent, experience, seasons; named buyers and prices; sales built from volume x price; measurable goals that match projections |
+| C3 Livelihood viability and market | 15 | Overview carries this trade's specifics and real figures; named buyers and prices; sales built from volume x price; measurable goals that match projections; licences and permits the trade needs |
 | C4 Financial soundness | 20 | 15–20 arithmetic checks; household tables agree with section 6 and the equipment list; realistic sales growth; costs rise with production; plausible margin; household budget balances |
 | C5 Relevance of requested support | 10 | Equipment list matches the stated request; each item justified; list numbered in sequence; grant reconciles (and ceiling, if set); quotations referenced |
 | C6 Contribution and sustainability | 10 | Beneficiary share of total investment; own contribution itemised; quantified savings; depreciation included |
-| C7 Risk analysis | 7 | At least four risks; covers market, weather, wildlife/theft, equipment; mitigations say who and when |
+| C7 Risk analysis | 7 | At least four risks; covers the risks that matter for this trade (weather and wildlife for farming, credit sales and competition for a shop, fuel and accidents for transport); mitigations say who and when |
 | C8 Capacity building | 3 | Technical and business/financial training |
 | C9 Verification trail | 5 | Preparer and verifier name, designation, date; photos of family and site; approval (not scored while pending) |
 
@@ -145,8 +178,10 @@ pytest                                   # PROPOSAL_PDF=path/to/real.pdf pytest 
 * **CSV**: a CSV export of the template sheet (any delimiter). Photos cannot travel in CSV,
   so attach them in SharePoint.
 
-`samples/make_sample.py` builds a fictional, well-prepared proposal in XLSX and CSV to try
-the tool and to run tests. `samples/make_demo_register.py` builds a fictional register of 60
+`samples/make_sample.py` builds a fictional, well-prepared crop proposal in XLSX and CSV.
+`samples/make_sector_samples.py` builds four more in `samples/sectors/` (grocery shop,
+tailoring unit, three wheeler, home bakery) to test the non-farm sectors. All are invented;
+never commit a real proposal. `samples/make_demo_register.py` builds a fictional register of 60
 appraisals for the dashboard.
 
 ## Extending
